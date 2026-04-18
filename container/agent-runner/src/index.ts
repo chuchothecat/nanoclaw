@@ -66,7 +66,9 @@ interface SDKUserMessage {
 
 function isRateLimitError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
-  return /429|rate.?limit|too.?many.?requests/i.test(msg);
+  return /429|rate.?limit|too.?many.?requests|usage limit|you(?:'|’)ve hit your limit|resets\s+\d/i.test(
+    msg,
+  );
 }
 
 function isClaudeSoftLimitMessage(text: string | null | undefined): boolean {
@@ -86,6 +88,21 @@ function isAuthError(err: unknown): boolean {
 function shouldFallbackToCodex(err: unknown): boolean {
   return isRateLimitError(err) || isAuthError(err);
 }
+
+const CODEX_PROXY_ENV_KEYS = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'ALL_PROXY',
+  'all_proxy',
+  'NO_PROXY',
+  'no_proxy',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'NODE_USE_ENV_PROXY',
+  'GIT_HTTP_PROXY_AUTHMETHOD',
+] as const;
 
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
@@ -588,85 +605,102 @@ async function runCodexQuery(
 ): Promise<{ newThreadId: string }> {
   const { Codex } = await import('@openai/codex-sdk');
 
-  const codex = new Codex();
-
-  let thread: Awaited<ReturnType<typeof codex.startThread>>;
-  if (codexThreadId) {
-    thread = codex.resumeThread(codexThreadId);
-  } else {
-    thread = codex.startThread({
-      workingDirectory: '/workspace/group',
-      skipGitRepoCheck: true,
-    });
+  const originalEnv = new Map<string, string | undefined>();
+  for (const key of CODEX_PROXY_ENV_KEYS) {
+    originalEnv.set(key, process.env[key]);
+    delete process.env[key];
   }
 
-  const streamed = await thread.runStreamed(prompt);
-  let text = '';
-  let turnError: string | undefined;
+  try {
+    const codex = new Codex();
 
-  for await (const event of streamed.events) {
-    if (event.type === 'item.completed') {
-      const item = (
-        event as {
-          type: string;
-          item?: {
-            type?: string;
-            text?: string;
-            content?: string;
-            output?: string;
-          };
+    let thread: Awaited<ReturnType<typeof codex.startThread>>;
+    if (codexThreadId) {
+      thread = codex.resumeThread(codexThreadId);
+    } else {
+      thread = codex.startThread({
+        workingDirectory: '/workspace/group',
+        skipGitRepoCheck: true,
+      });
+    }
+
+    const streamed = await thread.runStreamed(prompt);
+    let text = '';
+    let turnError: string | undefined;
+
+    for await (const event of streamed.events) {
+      if (event.type === 'item.completed') {
+        const item = (
+          event as {
+            type: string;
+            item?: {
+              type?: string;
+              text?: string;
+              content?: string;
+              output?: string;
+            };
+          }
+        ).item;
+        if (item?.type === 'agent_message' || item?.type === 'agentMessage') {
+          const content = item.text ?? item.content ?? item.output ?? '';
+          if (typeof content === 'string' && content) {
+            text += content;
+          }
         }
-      ).item;
-      if (item?.type === 'agent_message' || item?.type === 'agentMessage') {
-        const content = item.text ?? item.content ?? item.output ?? '';
-        if (typeof content === 'string' && content) {
-          text += content;
-        }
+        continue;
       }
-      continue;
-    }
 
-    if (event.type === 'error') {
-      turnError =
-        (event as { error?: { message?: string } }).error?.message ??
-        'Codex turn failed';
-      continue;
-    }
-
-    if (event.type === 'turn.failed') {
-      turnError =
-        (event as { error?: { message?: string } }).error?.message ??
-        'Codex turn failed';
-      continue;
-    }
-
-    if (event.type === 'turn.completed') {
-      const completedEvent = event as {
-        turn?: { status?: string; error?: { message?: string } };
-        error?: { message?: string };
-      };
-      if (completedEvent.turn?.status === 'failed') {
+      if (event.type === 'error') {
         turnError =
-          completedEvent.turn.error?.message ??
-          completedEvent.error?.message ??
+          (event as { error?: { message?: string } }).error?.message ??
           'Codex turn failed';
+        continue;
+      }
+
+      if (event.type === 'turn.failed') {
+        turnError =
+          (event as { error?: { message?: string } }).error?.message ??
+          'Codex turn failed';
+        continue;
+      }
+
+      if (event.type === 'turn.completed') {
+        const completedEvent = event as {
+          turn?: { status?: string; error?: { message?: string } };
+          error?: { message?: string };
+        };
+        if (completedEvent.turn?.status === 'failed') {
+          turnError =
+            completedEvent.turn.error?.message ??
+            completedEvent.error?.message ??
+            'Codex turn failed';
+        }
+      }
+    }
+
+    if (turnError) {
+      throw new Error(turnError);
+    }
+
+    const threadId = thread.id ?? `codex-${Date.now()}`;
+
+    writeOutput({
+      status: 'success',
+      result: text || null,
+      newSessionId: 'codex:' + threadId,
+    });
+
+    return { newThreadId: threadId };
+  } finally {
+    for (const key of CODEX_PROXY_ENV_KEYS) {
+      const value = originalEnv.get(key);
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
       }
     }
   }
-
-  if (turnError) {
-    throw new Error(turnError);
-  }
-
-  const threadId = thread.id ?? `codex-${Date.now()}`;
-
-  writeOutput({
-    status: 'success',
-    result: text || null,
-    newSessionId: 'codex:' + threadId,
-  });
-
-  return { newThreadId: threadId };
 }
 
 interface ScriptResult {
