@@ -358,6 +358,7 @@ export async function runContainerAgent(
       containerName,
       mountCount: mounts.length,
       isMain: input.isMain,
+      provider: input.providerConfig?.primary ?? 'claude',
     },
     'Spawning container agent',
   );

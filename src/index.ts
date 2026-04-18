@@ -292,7 +292,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           : JSON.stringify(result.result);
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
+      const backend = result.newSessionId?.startsWith('codex:') ? 'codex' : 'claude';
+      logger.info({ group: group.name, backend }, `Agent output: ${raw.length} chars`);
       if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
