@@ -631,53 +631,28 @@ async function runCodexQuery(
     let text = '';
     let turnError: string | undefined;
 
-    for await (const event of streamed.events) {
+    type CodexEvent = {
+      type: string;
+      item?: { type?: string; text?: string };
+      error?: { message?: string };
+      turn?: { status?: string; error?: { message?: string } };
+    };
+
+    for await (const event of streamed.events as AsyncIterable<CodexEvent>) {
       if (event.type === 'item.completed') {
-        const item = (
-          event as {
-            type: string;
-            item?: {
-              type?: string;
-              text?: string;
-              content?: string;
-              output?: string;
-            };
-          }
-        ).item;
-        if (item?.type === 'agent_message' || item?.type === 'agentMessage') {
-          const content = item.text ?? item.content ?? item.output ?? '';
-          if (typeof content === 'string' && content) {
-            text += content;
-          }
+        if (event.item?.type === 'agent_message' && typeof event.item.text === 'string' && event.item.text) {
+          text += event.item.text;
         }
         continue;
       }
 
-      if (event.type === 'error') {
-        turnError =
-          (event as { error?: { message?: string } }).error?.message ??
-          'Codex turn failed';
+      if (event.type === 'error' || event.type === 'turn.failed') {
+        turnError = event.error?.message ?? 'Codex turn failed';
         continue;
       }
 
-      if (event.type === 'turn.failed') {
-        turnError =
-          (event as { error?: { message?: string } }).error?.message ??
-          'Codex turn failed';
-        continue;
-      }
-
-      if (event.type === 'turn.completed') {
-        const completedEvent = event as {
-          turn?: { status?: string; error?: { message?: string } };
-          error?: { message?: string };
-        };
-        if (completedEvent.turn?.status === 'failed') {
-          turnError =
-            completedEvent.turn.error?.message ??
-            completedEvent.error?.message ??
-            'Codex turn failed';
-        }
+      if (event.type === 'turn.completed' && event.turn?.status === 'failed') {
+        turnError = event.turn.error?.message ?? event.error?.message ?? 'Codex turn failed';
       }
     }
 
