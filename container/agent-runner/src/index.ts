@@ -614,8 +614,8 @@ async function runQuery(
 async function runCodexQuery(
   prompt: string,
   codexThreadId: string | undefined,
-  _mcpServerPath: string,
-  _containerInput: ContainerInput,
+  mcpServerPath: string,
+  containerInput: ContainerInput,
 ): Promise<{ newThreadId: string }> {
   const { Codex } = await import('@openai/codex-sdk');
 
@@ -626,7 +626,21 @@ async function runCodexQuery(
   }
 
   try {
-    const codex = new Codex();
+    const codex = new Codex({
+      config: {
+        mcp_servers: {
+          nanoclaw: {
+            command: 'node',
+            args: [mcpServerPath],
+            env: {
+              NANOCLAW_CHAT_JID: containerInput.chatJid,
+              NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+              NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+            },
+          },
+        },
+      },
+    });
 
     let thread: Awaited<ReturnType<typeof codex.startThread>>;
     if (codexThreadId) {
