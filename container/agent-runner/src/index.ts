@@ -616,7 +616,10 @@ async function runCodexQuery(
 
     let thread: Awaited<ReturnType<typeof codex.startThread>>;
     if (codexThreadId) {
-      thread = codex.resumeThread(codexThreadId);
+      thread = codex.resumeThread(codexThreadId, {
+        workingDirectory: '/workspace/group',
+        skipGitRepoCheck: true,
+      });
     } else {
       thread = codex.startThread({
         workingDirectory: '/workspace/group',
