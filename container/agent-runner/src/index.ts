@@ -588,17 +588,60 @@ async function runCodexQuery(
 
   const streamed = await thread.runStreamed(prompt);
   let text = '';
+  let turnError: string | undefined;
 
   for await (const event of streamed.events) {
     if (event.type === 'item.completed') {
-      const item = (event as { type: string; item?: { type?: string; content?: string; output?: string } }).item;
-      if (item) {
-        const content = item.content ?? item.output ?? '';
+      const item = (
+        event as {
+          type: string;
+          item?: {
+            type?: string;
+            text?: string;
+            content?: string;
+            output?: string;
+          };
+        }
+      ).item;
+      if (item?.type === 'agent_message' || item?.type === 'agentMessage') {
+        const content = item.text ?? item.content ?? item.output ?? '';
         if (typeof content === 'string' && content) {
           text += content;
         }
       }
+      continue;
     }
+
+    if (event.type === 'error') {
+      turnError =
+        (event as { error?: { message?: string } }).error?.message ??
+        'Codex turn failed';
+      continue;
+    }
+
+    if (event.type === 'turn.failed') {
+      turnError =
+        (event as { error?: { message?: string } }).error?.message ??
+        'Codex turn failed';
+      continue;
+    }
+
+    if (event.type === 'turn.completed') {
+      const completedEvent = event as {
+        turn?: { status?: string; error?: { message?: string } };
+        error?: { message?: string };
+      };
+      if (completedEvent.turn?.status === 'failed') {
+        turnError =
+          completedEvent.turn.error?.message ??
+          completedEvent.error?.message ??
+          'Codex turn failed';
+      }
+    }
+  }
+
+  if (turnError) {
+    throw new Error(turnError);
   }
 
   const threadId = thread.id ?? `codex-${Date.now()}`;
@@ -769,9 +812,6 @@ async function main(): Promise<void> {
         codexThreadId = codexResult.newThreadId;
         sessionId = 'codex:' + codexThreadId;
 
-        // Emit session update so host can track it
-        writeOutput({ status: 'success', result: null, newSessionId: sessionId });
-
         log('Codex query ended, waiting for next IPC message...');
         const nextMessage = await waitForIpcMessage();
         if (nextMessage === null) {
@@ -810,8 +850,6 @@ async function main(): Promise<void> {
           );
           codexThreadId = codexResult.newThreadId;
           sessionId = 'codex:' + codexThreadId;
-
-          writeOutput({ status: 'success', result: null, newSessionId: sessionId });
 
           log('Codex fallback query ended, waiting for next IPC message...');
           const nextMessage = await waitForIpcMessage();
