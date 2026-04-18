@@ -69,6 +69,15 @@ function isRateLimitError(err: unknown): boolean {
   return /429|rate.?limit|too.?many.?requests/i.test(msg);
 }
 
+function isClaudeSoftLimitMessage(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return (
+    /you(?:'|’)ve hit your limit/i.test(text) ||
+    /usage limit/i.test(text) ||
+    (/resets\s+\d/i.test(text) && /limit/i.test(text))
+  );
+}
+
 function isAuthError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return /401|unauthorized|authentication failed|invalid.*key|token.*expired/i.test(msg);
@@ -547,6 +556,11 @@ async function runQuery(
       log(
         `Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`,
       );
+
+      if (isClaudeSoftLimitMessage(textResult)) {
+        throw new Error(`Claude reported a usage limit: ${textResult}`);
+      }
+
       writeOutput({
         status: 'success',
         result: textResult || null,
