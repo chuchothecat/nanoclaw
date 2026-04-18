@@ -583,7 +583,11 @@ async function runQuery(
         `Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`,
       );
 
-      if (isClaudeSoftLimitMessage(textResult)) {
+      // Only treat limit-like text as a real runtime limit when the SDK itself
+      // reports a non-success subtype. If subtype is 'success', the text is a
+      // legitimate Claude response (e.g. discussing limits in context) and
+      // should not trigger a provider switch.
+      if (message.subtype !== 'success' && isClaudeSoftLimitMessage(textResult)) {
         throw new SoftLimitError(
           `Claude reported a usage limit: ${textResult}`,
           consumedDuringQuery,
@@ -839,13 +843,19 @@ async function main(): Promise<void> {
     prompt = `[SCHEDULED TASK]\n\nScript output:\n${JSON.stringify(scriptResult.data, null, 2)}\n\nInstructions:\n${containerInput.prompt}`;
   }
 
-  // Determine initial provider: parse 'codex:' prefix from sessionId
+  // Determine initial provider.
+  // A 'codex:' prefix on sessionId means a prior turn fell back to Codex, but that
+  // doesn't mean we should stay on Codex permanently — try Claude first unless the
+  // primary is explicitly set to 'codex'. We save the thread ID so we can resume
+  // the Codex thread if Claude fails again this turn.
   let useCodex = containerInput.providerConfig?.primary === 'codex';
   let codexThreadId: string | undefined;
   if (sessionId?.startsWith('codex:')) {
-    useCodex = true;
     codexThreadId = sessionId.slice('codex:'.length);
-    sessionId = undefined; // Claude session ID is not applicable
+    sessionId = undefined; // Can't resume a Codex thread with Claude; start fresh
+    if (!useCodex) {
+      log('Prior turn used Codex fallback; retrying Claude first (codexThreadId saved for re-fallback)');
+    }
   }
 
   // Query loop: run query → wait for IPC message → run new query → repeat
