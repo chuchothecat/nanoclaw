@@ -64,6 +64,13 @@ interface SDKUserMessage {
   session_id: string;
 }
 
+class SoftLimitError extends Error {
+  constructor(message: string, public readonly consumedIpcMessages: string[]) {
+    super(message);
+    this.name = 'SoftLimitError';
+  }
+}
+
 function isRateLimitError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return /429|rate.?limit|too.?many.?requests|usage limit|you(?:'|’)ve hit your limit|resets\s+\d/i.test(
@@ -433,6 +440,7 @@ async function runQuery(
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
   let closedDuringQuery = false;
+  const consumedDuringQuery: string[] = [];
   const pollIpcDuringQuery = () => {
     if (!ipcPolling) return;
     if (shouldClose()) {
@@ -445,6 +453,7 @@ async function runQuery(
     const messages = drainIpcInput();
     for (const text of messages) {
       log(`Piping IPC message into active query (${text.length} chars)`);
+      consumedDuringQuery.push(text);
       stream.push(text);
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
@@ -575,7 +584,10 @@ async function runQuery(
       );
 
       if (isClaudeSoftLimitMessage(textResult)) {
-        throw new Error(`Claude reported a usage limit: ${textResult}`);
+        throw new SoftLimitError(
+          `Claude reported a usage limit: ${textResult}`,
+          consumedDuringQuery,
+        );
       }
 
       writeOutput({
@@ -584,9 +596,11 @@ async function runQuery(
         newSessionId,
       });
     }
+  } finally {
+    ipcPolling = false;
+    stream.end();
   }
 
-  ipcPolling = false;
   log(
     `Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`,
   );
@@ -868,8 +882,18 @@ async function main(): Promise<void> {
           useCodex = true;
           sessionId = undefined;
           codexThreadId = undefined;
+
+          // Replay any IPC messages consumed mid-turn before the error
+          const consumed = claudeErr instanceof SoftLimitError ? claudeErr.consumedIpcMessages : [];
+          const fallbackPrompt = consumed.length > 0
+            ? [prompt, ...consumed].join('\n\n')
+            : prompt;
+          if (consumed.length > 0) {
+            log(`Replaying ${consumed.length} consumed IPC message(s) into Codex fallback prompt`);
+          }
+
           const codexResult = await runCodexQuery(
-            prompt,
+            fallbackPrompt,
             undefined,
             mcpServerPath,
             containerInput,
