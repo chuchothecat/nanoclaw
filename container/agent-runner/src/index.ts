@@ -488,6 +488,7 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  try {
   for await (const message of query({
     prompt: stream,
     options: {
@@ -600,6 +601,7 @@ async function runQuery(
         newSessionId,
       });
     }
+  }
   } finally {
     ipcPolling = false;
     stream.end();
