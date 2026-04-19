@@ -33,6 +33,7 @@ export interface ContainerConfig {
   provider?: {
     primary?: 'claude' | 'codex';
     fallback?: 'codex' | 'none';
+    model?: string;
   };
 }
 

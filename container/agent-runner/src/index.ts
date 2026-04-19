@@ -36,6 +36,7 @@ interface ContainerInput {
   providerConfig?: {
     primary?: 'claude' | 'codex';
     fallback?: 'codex' | 'none';
+    model?: string;
   };
 }
 
@@ -648,17 +649,17 @@ async function runCodexQuery(
       },
     });
 
+    const threadOpts = {
+      workingDirectory: '/workspace/group',
+      skipGitRepoCheck: true,
+      ...(containerInput.providerConfig?.model ? { model: containerInput.providerConfig.model } : {}),
+    };
+
     let thread: Awaited<ReturnType<typeof codex.startThread>>;
     if (codexThreadId) {
-      thread = codex.resumeThread(codexThreadId, {
-        workingDirectory: '/workspace/group',
-        skipGitRepoCheck: true,
-      });
+      thread = codex.resumeThread(codexThreadId, threadOpts);
     } else {
-      thread = codex.startThread({
-        workingDirectory: '/workspace/group',
-        skipGitRepoCheck: true,
-      });
+      thread = codex.startThread(threadOpts);
     }
 
     const streamed = await thread.runStreamed(prompt);

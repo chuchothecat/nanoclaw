@@ -1,4 +1,13 @@
-import { Client, Events, GatewayIntentBits, Message, TextChannel } from 'discord.js';
+import {
+  Client,
+  Events,
+  GatewayIntentBits,
+  Message,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  TextChannel,
+} from 'discord.js';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
@@ -6,15 +15,26 @@ import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
+  ContainerConfig,
   OnChatMetadata,
   OnInboundMessage,
   RegisteredGroup,
 } from '../types.js';
 
+const MODEL_PRESETS: Record<string, { provider: ContainerConfig['provider'] }> = {
+  'claude-sonnet': { provider: { primary: 'claude', model: 'claude-sonnet-4-6' } },
+  'claude-opus':   { provider: { primary: 'claude', model: 'claude-opus-4-7' } },
+  'claude-haiku':  { provider: { primary: 'claude', model: 'claude-haiku-4-5-20251001' } },
+  'codex-gpt4o':   { provider: { primary: 'codex',  fallback: 'codex', model: 'gpt-4o' } },
+  'codex-mini':    { provider: { primary: 'codex',  fallback: 'codex', model: 'gpt-4o-mini' } },
+  'codex-o4-mini': { provider: { primary: 'codex',  fallback: 'codex', model: 'o4-mini' } },
+};
+
 export interface DiscordChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
+  onGroupConfigUpdate: (jid: string, config: ContainerConfig | undefined) => void;
 }
 
 export class DiscordChannel implements Channel {
@@ -88,18 +108,20 @@ export class DiscordChannel implements Channel {
 
       // Handle attachments — store placeholders so the agent knows something was sent
       if (message.attachments.size > 0) {
-        const attachmentDescriptions = [...message.attachments.values()].map((att) => {
-          const contentType = att.contentType || '';
-          if (contentType.startsWith('image/')) {
-            return `[Image: ${att.name || 'image'}]`;
-          } else if (contentType.startsWith('video/')) {
-            return `[Video: ${att.name || 'video'}]`;
-          } else if (contentType.startsWith('audio/')) {
-            return `[Audio: ${att.name || 'audio'}]`;
-          } else {
-            return `[File: ${att.name || 'file'}]`;
-          }
-        });
+        const attachmentDescriptions = [...message.attachments.values()].map(
+          (att) => {
+            const contentType = att.contentType || '';
+            if (contentType.startsWith('image/')) {
+              return `[Image: ${att.name || 'image'}]`;
+            } else if (contentType.startsWith('video/')) {
+              return `[Video: ${att.name || 'video'}]`;
+            } else if (contentType.startsWith('audio/')) {
+              return `[Audio: ${att.name || 'audio'}]`;
+            } else {
+              return `[File: ${att.name || 'file'}]`;
+            }
+          },
+        );
         if (content) {
           content = `${content}\n${attachmentDescriptions.join('\n')}`;
         } else {
@@ -125,7 +147,13 @@ export class DiscordChannel implements Channel {
 
       // Store chat metadata for discovery
       const isGroup = message.guild !== null;
-      this.opts.onChatMetadata(chatJid, timestamp, chatName, 'discord', isGroup);
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        chatName,
+        'discord',
+        isGroup,
+      );
 
       // Only deliver full message for registered groups
       const group = this.opts.registeredGroups()[chatJid];
@@ -159,8 +187,42 @@ export class DiscordChannel implements Channel {
       logger.error({ err: err.message }, 'Discord client error');
     });
 
+    this.client.on(Events.InteractionCreate, async (interaction) => {
+      if (!interaction.isChatInputCommand()) return;
+      if (interaction.commandName !== 'model') return;
+
+      const chatJid = `dc:${interaction.channelId}`;
+      const groups = this.opts.registeredGroups();
+      const group = groups[chatJid];
+      if (!group) {
+        await interaction.reply({ content: 'This channel is not registered with NanoClaw.', ephemeral: true });
+        return;
+      }
+
+      const preset = interaction.options.getString('preset', true);
+      const config = MODEL_PRESETS[preset];
+      if (!config) {
+        await interaction.reply({ content: `Unknown preset: ${preset}`, ephemeral: true });
+        return;
+      }
+
+      const newConfig: ContainerConfig = { ...group.containerConfig, ...config };
+      this.opts.onGroupConfigUpdate(chatJid, newConfig);
+
+      const labels: Record<string, string> = {
+        'claude-sonnet': 'Claude Sonnet 4.6',
+        'claude-opus':   'Claude Opus 4.7',
+        'claude-haiku':  'Claude Haiku 4.5',
+        'codex-gpt4o':   'Codex GPT-4o',
+        'codex-mini':    'Codex GPT-4o mini',
+        'codex-o4-mini': 'Codex o4-mini',
+      };
+      await interaction.reply(`Switched to **${labels[preset]}**. Takes effect on the next message.`);
+      logger.info({ chatJid, preset }, 'Model updated via /model slash command');
+    });
+
     return new Promise<void>((resolve) => {
-      this.client!.once(Events.ClientReady, (readyClient) => {
+      this.client!.once(Events.ClientReady, async (readyClient) => {
         logger.info(
           { username: readyClient.user.tag, id: readyClient.user.id },
           'Discord bot connected',
@@ -169,6 +231,35 @@ export class DiscordChannel implements Channel {
         console.log(
           `  Use /chatid command or check channel IDs in Discord settings\n`,
         );
+
+        // Register slash commands globally
+        const commands = [
+          new SlashCommandBuilder()
+            .setName('model')
+            .setDescription('Switch the AI model for this channel')
+            .addStringOption(opt =>
+              opt.setName('preset')
+                .setDescription('Model to use')
+                .setRequired(true)
+                .addChoices(
+                  { name: 'Claude Sonnet 4.6 (default)', value: 'claude-sonnet' },
+                  { name: 'Claude Opus 4.7 (powerful)',  value: 'claude-opus' },
+                  { name: 'Claude Haiku 4.5 (fast)',     value: 'claude-haiku' },
+                  { name: 'Codex GPT-4o',                value: 'codex-gpt4o' },
+                  { name: 'Codex GPT-4o mini',           value: 'codex-mini' },
+                  { name: 'Codex o4-mini',               value: 'codex-o4-mini' },
+                )
+            ),
+        ].map(cmd => cmd.toJSON());
+
+        try {
+          const rest = new REST().setToken(this.botToken);
+          await rest.put(Routes.applicationCommands(readyClient.user.id), { body: commands });
+          logger.info('Discord slash commands registered');
+        } catch (err) {
+          logger.warn({ err }, 'Failed to register Discord slash commands');
+        }
+
         resolve();
       });
 

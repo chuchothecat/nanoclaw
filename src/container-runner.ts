@@ -48,6 +48,7 @@ export interface ContainerInput {
   providerConfig?: {
     primary?: 'claude' | 'codex';
     fallback?: 'codex' | 'none';
+    model?: string;
   };
 }
 
@@ -339,6 +340,12 @@ export async function runContainerAgent(
     agentIdentifier,
   );
 
+  // Inject ANTHROPIC_MODEL so Claude Code picks up the requested model
+  const claudeModel = input.providerConfig?.primary !== 'codex' && input.providerConfig?.model;
+  if (claudeModel) {
+    containerArgs.splice(containerArgs.length - 1, 0, '-e', `ANTHROPIC_MODEL=${claudeModel}`);
+  }
+
   logger.debug(
     {
       group: group.name,
@@ -359,6 +366,7 @@ export async function runContainerAgent(
       mountCount: mounts.length,
       isMain: input.isMain,
       provider: input.providerConfig?.primary ?? 'claude',
+      model: input.providerConfig?.model ?? 'default',
     },
     'Spawning container agent',
   );

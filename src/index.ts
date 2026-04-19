@@ -292,8 +292,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           : JSON.stringify(result.result);
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      const backend = result.newSessionId?.startsWith('codex:') ? 'codex' : 'claude';
-      logger.info({ group: group.name, backend }, `Agent output: ${raw.length} chars`);
+      const backend = result.newSessionId?.startsWith('codex:')
+        ? 'codex'
+        : 'claude';
+      logger.info(
+        { group: group.name, backend },
+        `Agent output: ${raw.length} chars`,
+      );
       if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
@@ -674,6 +679,14 @@ async function main(): Promise<void> {
       isGroup?: boolean,
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
+    onGroupConfigUpdate: (jid: string, config: import('./types.js').ContainerConfig | undefined) => {
+      const group = registeredGroups[jid];
+      if (!group) return;
+      const updated = { ...group, containerConfig: config };
+      registeredGroups[jid] = updated;
+      setRegisteredGroup(jid, updated);
+      logger.info({ jid, config }, 'Group config updated');
+    },
   };
 
   // Create and connect all registered channels.
