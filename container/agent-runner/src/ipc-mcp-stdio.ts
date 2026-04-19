@@ -18,7 +18,7 @@ const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 // Context from environment variables (set by the agent runner)
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
-const isMain = process.env.NANOCLAW_IS_MAIN === '1';
+const isMain = process.env.NANOCLAW_IS_MAIN === '1' || process.env.NANOCLAW_IS_MAIN === 'true';
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });

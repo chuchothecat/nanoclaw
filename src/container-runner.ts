@@ -200,10 +200,11 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // Seed OAuth credentials from host if not already present
+  // Always sync OAuth credentials from host — access tokens expire and the
+  // host Codex TUI refreshes them automatically, so we must keep the copy current.
   const hostCodexAuth = path.join(os.homedir(), '.codex', 'auth.json');
   const groupCodexAuth = path.join(groupCodexDir, 'auth.json');
-  if (fs.existsSync(hostCodexAuth) && !fs.existsSync(groupCodexAuth)) {
+  if (fs.existsSync(hostCodexAuth)) {
     fs.copyFileSync(hostCodexAuth, groupCodexAuth);
   }
 
@@ -341,9 +342,15 @@ export async function runContainerAgent(
   );
 
   // Inject ANTHROPIC_MODEL so Claude Code picks up the requested model
-  const claudeModel = input.providerConfig?.primary !== 'codex' && input.providerConfig?.model;
+  const claudeModel =
+    input.providerConfig?.primary !== 'codex' && input.providerConfig?.model;
   if (claudeModel) {
-    containerArgs.splice(containerArgs.length - 1, 0, '-e', `ANTHROPIC_MODEL=${claudeModel}`);
+    containerArgs.splice(
+      containerArgs.length - 1,
+      0,
+      '-e',
+      `ANTHROPIC_MODEL=${claudeModel}`,
+    );
   }
 
   logger.debug(
