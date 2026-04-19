@@ -689,7 +689,10 @@ async function main(): Promise<void> {
       registeredGroups[jid] = updated;
       setRegisteredGroup(jid, updated);
       queue.closeStdin(jid);
-      logger.info({ jid, config }, 'Group config updated — active container closed for respawn');
+      logger.info(
+        { jid, config },
+        'Group config updated — active container closed for respawn',
+      );
     },
   };
 
@@ -765,6 +768,7 @@ async function main(): Promise<void> {
         writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
       }
     },
+    closeStdin: (jid: string) => queue.closeStdin(jid),
   });
   startSessionCleanup();
   queue.setProcessMessagesFn(processGroupMessages);
