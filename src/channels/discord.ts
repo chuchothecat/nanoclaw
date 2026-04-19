@@ -32,13 +32,35 @@ const MODEL_PRESETS: Record<string, { provider: ContainerConfig['provider'] }> =
     'claude-haiku': {
       provider: { primary: 'claude', model: 'claude-haiku-4-5-20251001' },
     },
-    'codex-gpt54':       { provider: { primary: 'codex', fallback: 'codex', model: 'gpt-5.4' } },
-    'codex-gpt52-codex': { provider: { primary: 'codex', fallback: 'codex', model: 'gpt-5.2-codex' } },
-    'codex-gpt51-max':   { provider: { primary: 'codex', fallback: 'codex', model: 'gpt-5.1-codex-max' } },
-    'codex-gpt54-mini':  { provider: { primary: 'codex', fallback: 'codex', model: 'gpt-5.4-mini' } },
-    'codex-gpt53-codex': { provider: { primary: 'codex', fallback: 'codex', model: 'gpt-5.3-codex' } },
-    'codex-gpt52':       { provider: { primary: 'codex', fallback: 'codex', model: 'gpt-5.2' } },
-    'codex-gpt51-mini':  { provider: { primary: 'codex', fallback: 'codex', model: 'gpt-5.1-codex-mini' } },
+    'codex-gpt54': {
+      provider: { primary: 'codex', fallback: 'codex', model: 'gpt-5.4' },
+    },
+    'codex-gpt52-codex': {
+      provider: { primary: 'codex', fallback: 'codex', model: 'gpt-5.2-codex' },
+    },
+    'codex-gpt51-max': {
+      provider: {
+        primary: 'codex',
+        fallback: 'codex',
+        model: 'gpt-5.1-codex-max',
+      },
+    },
+    'codex-gpt54-mini': {
+      provider: { primary: 'codex', fallback: 'codex', model: 'gpt-5.4-mini' },
+    },
+    'codex-gpt53-codex': {
+      provider: { primary: 'codex', fallback: 'codex', model: 'gpt-5.3-codex' },
+    },
+    'codex-gpt52': {
+      provider: { primary: 'codex', fallback: 'codex', model: 'gpt-5.2' },
+    },
+    'codex-gpt51-mini': {
+      provider: {
+        primary: 'codex',
+        fallback: 'codex',
+        model: 'gpt-5.1-codex-mini',
+      },
+    },
   };
 
 export interface DiscordChannelOpts {
@@ -233,15 +255,15 @@ export class DiscordChannel implements Channel {
       this.opts.onGroupConfigUpdate(chatJid, newConfig);
 
       const labels: Record<string, string> = {
-        'claude-sonnet':    'Claude Sonnet 4.6',
-        'claude-opus':      'Claude Opus 4.7',
-        'claude-haiku':     'Claude Haiku 4.5',
-        'codex-gpt54':      'Codex gpt-5.4',
+        'claude-sonnet': 'Claude Sonnet 4.6',
+        'claude-opus': 'Claude Opus 4.7',
+        'claude-haiku': 'Claude Haiku 4.5',
+        'codex-gpt54': 'Codex gpt-5.4',
         'codex-gpt54-mini': 'Codex gpt-5.4-mini',
-        'codex-gpt53-codex':'Codex gpt-5.3-codex',
-        'codex-gpt52-codex':'Codex gpt-5.2-codex',
-        'codex-gpt52':      'Codex gpt-5.2',
-        'codex-gpt51-max':  'Codex gpt-5.1-codex-max',
+        'codex-gpt53-codex': 'Codex gpt-5.3-codex',
+        'codex-gpt52-codex': 'Codex gpt-5.2-codex',
+        'codex-gpt52': 'Codex gpt-5.2',
+        'codex-gpt51-max': 'Codex gpt-5.1-codex-max',
         'codex-gpt51-mini': 'Codex gpt-5.1-codex-mini',
       };
       await interaction.reply(
@@ -275,26 +297,35 @@ export class DiscordChannel implements Channel {
                 .setDescription('Model to use')
                 .setRequired(true)
                 .addChoices(
-                  { name: 'Claude Sonnet 4.6',           value: 'claude-sonnet' },
-                  { name: 'Claude Opus 4.7',             value: 'claude-opus' },
-                  { name: 'Claude Haiku 4.5',            value: 'claude-haiku' },
-                  { name: 'Codex gpt-5.4 (latest)',      value: 'codex-gpt54' },
-                  { name: 'Codex gpt-5.4-mini',          value: 'codex-gpt54-mini' },
-                  { name: 'Codex gpt-5.3-codex',         value: 'codex-gpt53-codex' },
-                  { name: 'Codex gpt-5.2-codex',         value: 'codex-gpt52-codex' },
-                  { name: 'Codex gpt-5.2',               value: 'codex-gpt52' },
-                  { name: 'Codex gpt-5.1-codex-max',     value: 'codex-gpt51-max' },
-                  { name: 'Codex gpt-5.1-codex-mini',    value: 'codex-gpt51-mini' },
+                  { name: 'Claude Sonnet 4.6', value: 'claude-sonnet' },
+                  { name: 'Claude Opus 4.7', value: 'claude-opus' },
+                  { name: 'Claude Haiku 4.5', value: 'claude-haiku' },
+                  { name: 'Codex gpt-5.4 (latest)', value: 'codex-gpt54' },
+                  { name: 'Codex gpt-5.4-mini', value: 'codex-gpt54-mini' },
+                  { name: 'Codex gpt-5.3-codex', value: 'codex-gpt53-codex' },
+                  { name: 'Codex gpt-5.2-codex', value: 'codex-gpt52-codex' },
+                  { name: 'Codex gpt-5.2', value: 'codex-gpt52' },
+                  { name: 'Codex gpt-5.1-codex-max', value: 'codex-gpt51-max' },
+                  {
+                    name: 'Codex gpt-5.1-codex-mini',
+                    value: 'codex-gpt51-mini',
+                  },
                 ),
             ),
         ].map((cmd) => cmd.toJSON());
 
         try {
           const rest = new REST().setToken(this.botToken);
-          await rest.put(Routes.applicationCommands(readyClient.user.id), {
-            body: commands,
-          });
-          logger.info('Discord slash commands registered');
+          const guildIds = [...readyClient.guilds.cache.keys()];
+          await Promise.all(
+            guildIds.map((guildId) =>
+              rest.put(
+                Routes.applicationGuildCommands(readyClient.user.id, guildId),
+                { body: commands },
+              ),
+            ),
+          );
+          logger.info({ guilds: guildIds.length }, 'Discord slash commands registered (guild-scoped)');
         } catch (err) {
           logger.warn({ err }, 'Failed to register Discord slash commands');
         }
