@@ -679,13 +679,17 @@ async function main(): Promise<void> {
       isGroup?: boolean,
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
-    onGroupConfigUpdate: (jid: string, config: import('./types.js').ContainerConfig | undefined) => {
+    onGroupConfigUpdate: (
+      jid: string,
+      config: import('./types.js').ContainerConfig | undefined,
+    ) => {
       const group = registeredGroups[jid];
       if (!group) return;
       const updated = { ...group, containerConfig: config };
       registeredGroups[jid] = updated;
       setRegisteredGroup(jid, updated);
-      logger.info({ jid, config }, 'Group config updated');
+      queue.closeStdin(jid);
+      logger.info({ jid, config }, 'Group config updated — active container closed for respawn');
     },
   };
 
