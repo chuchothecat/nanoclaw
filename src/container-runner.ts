@@ -4,6 +4,7 @@
  */
 import { ChildProcess, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import {
@@ -44,6 +45,11 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;
+  providerConfig?: {
+    primary?: 'claude' | 'codex';
+    fallback?: 'codex' | 'none';
+    model?: string;
+  };
 }
 
 export interface ContainerOutput {
@@ -185,6 +191,23 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Per-group Codex sessions directory (isolated from other groups)
+  const groupCodexDir = path.join(DATA_DIR, 'sessions', group.folder, '.codex');
+  fs.mkdirSync(groupCodexDir, { recursive: true });
+  mounts.push({
+    hostPath: groupCodexDir,
+    containerPath: '/home/node/.codex',
+    readonly: false,
+  });
+
+  // Always sync OAuth credentials from host — access tokens expire and the
+  // host Codex TUI refreshes them automatically, so we must keep the copy current.
+  const hostCodexAuth = path.join(os.homedir(), '.codex', 'auth.json');
+  const groupCodexAuth = path.join(groupCodexDir, 'auth.json');
+  if (fs.existsSync(hostCodexAuth)) {
+    fs.copyFileSync(hostCodexAuth, groupCodexAuth);
+  }
+
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = resolveGroupIpcPath(group.folder);
@@ -318,6 +341,18 @@ export async function runContainerAgent(
     agentIdentifier,
   );
 
+  // Inject ANTHROPIC_MODEL so Claude Code picks up the requested model
+  const claudeModel =
+    input.providerConfig?.primary !== 'codex' && input.providerConfig?.model;
+  if (claudeModel) {
+    containerArgs.splice(
+      containerArgs.length - 1,
+      0,
+      '-e',
+      `ANTHROPIC_MODEL=${claudeModel}`,
+    );
+  }
+
   logger.debug(
     {
       group: group.name,
@@ -337,6 +372,8 @@ export async function runContainerAgent(
       containerName,
       mountCount: mounts.length,
       isMain: input.isMain,
+      provider: input.providerConfig?.primary ?? 'claude',
+      model: input.providerConfig?.model ?? 'default',
     },
     'Spawning container agent',
   );

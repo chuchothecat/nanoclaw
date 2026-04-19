@@ -23,6 +23,7 @@ export interface IpcDeps {
     registeredJids: Set<string>,
   ) => void;
   onTasksChanged: () => void;
+  closeStdin: (jid: string) => void;
 }
 
 let ipcWatcherRunning = false;
@@ -173,6 +174,9 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For set_model
+    provider?: 'claude' | 'codex';
+    model?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -461,6 +465,40 @@ export async function processTaskIpc(
         );
       }
       break;
+
+    case 'set_model': {
+      const targetJid = data.jid ?? sourceGroup;
+      const target = registeredGroups[targetJid];
+      if (!target) {
+        logger.warn({ targetJid }, 'set_model: group not found');
+        break;
+      }
+      // Auth: a non-main container may only update its own group
+      if (!isMain && target.folder !== sourceGroup) {
+        logger.warn(
+          { sourceGroup, targetJid },
+          'Unauthorized set_model attempt blocked',
+        );
+        break;
+      }
+      const newProvider: RegisteredGroup['containerConfig'] = {
+        ...target.containerConfig,
+        provider: {
+          ...target.containerConfig?.provider,
+          ...(data.provider ? { primary: data.provider } : {}),
+          ...(data.model !== undefined
+            ? { model: data.model || undefined }
+            : {}),
+        },
+      };
+      deps.registerGroup(targetJid, { ...target, containerConfig: newProvider });
+      deps.closeStdin(targetJid);
+      logger.info(
+        { targetJid, provider: data.provider, model: data.model },
+        'Model updated via IPC — active container closed for respawn',
+      );
+      break;
+    }
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');

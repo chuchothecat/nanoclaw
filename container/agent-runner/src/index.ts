@@ -33,6 +33,11 @@ interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;
+  providerConfig?: {
+    primary?: 'claude' | 'codex';
+    fallback?: 'codex' | 'none';
+    model?: string;
+  };
 }
 
 interface ContainerOutput {
@@ -59,6 +64,53 @@ interface SDKUserMessage {
   parent_tool_use_id: null;
   session_id: string;
 }
+
+class SoftLimitError extends Error {
+  constructor(message: string, public readonly consumedIpcMessages: string[]) {
+    super(message);
+    this.name = 'SoftLimitError';
+  }
+}
+
+function isRateLimitError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /429|rate.?limit|too.?many.?requests|usage limit|you(?:'|’)ve hit your limit|resets\s+\d/i.test(
+    msg,
+  );
+}
+
+function isClaudeSoftLimitMessage(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return (
+    /you(?:'|’)ve hit your limit/i.test(text) ||
+    /usage limit/i.test(text) ||
+    (/resets\s+\d/i.test(text) && /limit/i.test(text))
+  );
+}
+
+function isAuthError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /401|unauthorized|authentication failed|invalid.*key|token.*expired/i.test(msg);
+}
+
+function shouldFallbackToCodex(err: unknown): boolean {
+  return isRateLimitError(err) || isAuthError(err);
+}
+
+const CODEX_PROXY_ENV_KEYS = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'ALL_PROXY',
+  'all_proxy',
+  'NO_PROXY',
+  'no_proxy',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'NODE_USE_ENV_PROXY',
+  'GIT_HTTP_PROXY_AUTHMETHOD',
+] as const;
 
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
@@ -389,6 +441,7 @@ async function runQuery(
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
   let closedDuringQuery = false;
+  const consumedDuringQuery: string[] = [];
   const pollIpcDuringQuery = () => {
     if (!ipcPolling) return;
     if (shouldClose()) {
@@ -401,6 +454,7 @@ async function runQuery(
     const messages = drainIpcInput();
     for (const text of messages) {
       log(`Piping IPC message into active query (${text.length} chars)`);
+      consumedDuringQuery.push(text);
       stream.push(text);
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
@@ -435,6 +489,7 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  try {
   for await (const message of query({
     prompt: stream,
     options: {
@@ -529,6 +584,18 @@ async function runQuery(
       log(
         `Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`,
       );
+
+      // Only treat limit-like text as a real runtime limit when the SDK itself
+      // reports a non-success subtype. If subtype is 'success', the text is a
+      // legitimate Claude response (e.g. discussing limits in context) and
+      // should not trigger a provider switch.
+      if (message.subtype !== 'success' && isClaudeSoftLimitMessage(textResult)) {
+        throw new SoftLimitError(
+          `Claude reported a usage limit: ${textResult}`,
+          consumedDuringQuery,
+        );
+      }
+
       writeOutput({
         status: 'success',
         result: textResult || null,
@@ -536,12 +603,117 @@ async function runQuery(
       });
     }
   }
+  } finally {
+    ipcPolling = false;
+    stream.end();
+  }
 
-  ipcPolling = false;
   log(
     `Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`,
   );
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
+}
+
+/**
+ * Run a query using the OpenAI Codex SDK.
+ * Used as fallback when Claude hits rate limits or auth errors.
+ */
+async function runCodexQuery(
+  prompt: string,
+  codexThreadId: string | undefined,
+  mcpServerPath: string,
+  containerInput: ContainerInput,
+): Promise<{ newThreadId: string }> {
+  const { Codex } = await import('@openai/codex-sdk');
+
+  const originalEnv = new Map<string, string | undefined>();
+  for (const key of CODEX_PROXY_ENV_KEYS) {
+    originalEnv.set(key, process.env[key]);
+    delete process.env[key];
+  }
+
+  try {
+    const codex = new Codex({
+      config: {
+        mcp_servers: {
+          nanoclaw: {
+            command: 'node',
+            args: [mcpServerPath],
+            env: {
+              NANOCLAW_CHAT_JID: containerInput.chatJid,
+              NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+              NANOCLAW_IS_MAIN: containerInput.isMain ? 'true' : 'false',
+            },
+          },
+        },
+      },
+    });
+
+    const threadOpts = {
+      workingDirectory: '/workspace/group',
+      skipGitRepoCheck: true,
+      ...(containerInput.providerConfig?.model ? { model: containerInput.providerConfig.model } : {}),
+    };
+
+    let thread: Awaited<ReturnType<typeof codex.startThread>>;
+    if (codexThreadId) {
+      thread = codex.resumeThread(codexThreadId, threadOpts);
+    } else {
+      thread = codex.startThread(threadOpts);
+    }
+
+    const streamed = await thread.runStreamed(prompt);
+    let text = '';
+    let turnError: string | undefined;
+
+    type CodexEvent = {
+      type: string;
+      item?: { type?: string; text?: string };
+      error?: { message?: string };
+      turn?: { status?: string; error?: { message?: string } };
+    };
+
+    for await (const event of streamed.events as AsyncIterable<CodexEvent>) {
+      if (event.type === 'item.completed') {
+        if (event.item?.type === 'agent_message' && typeof event.item.text === 'string' && event.item.text) {
+          text += event.item.text;
+        }
+        continue;
+      }
+
+      if (event.type === 'error' || event.type === 'turn.failed') {
+        turnError = event.error?.message ?? 'Codex turn failed';
+        continue;
+      }
+
+      if (event.type === 'turn.completed' && event.turn?.status === 'failed') {
+        turnError = event.turn.error?.message ?? event.error?.message ?? 'Codex turn failed';
+      }
+    }
+
+    if (turnError) {
+      throw new Error(turnError);
+    }
+
+    const threadId = thread.id ?? `codex-${Date.now()}`;
+
+    writeOutput({
+      status: 'success',
+      result: text || null,
+      newSessionId: 'codex:' + threadId,
+    });
+
+    return { newThreadId: threadId };
+  } finally {
+    for (const key of CODEX_PROXY_ENV_KEYS) {
+      const value = originalEnv.get(key);
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 }
 
 interface ScriptResult {
@@ -674,22 +846,101 @@ async function main(): Promise<void> {
     prompt = `[SCHEDULED TASK]\n\nScript output:\n${JSON.stringify(scriptResult.data, null, 2)}\n\nInstructions:\n${containerInput.prompt}`;
   }
 
+  // Determine initial provider.
+  // A 'codex:' prefix on sessionId means a prior turn fell back to Codex, but that
+  // doesn't mean we should stay on Codex permanently — try Claude first unless the
+  // primary is explicitly set to 'codex'. We save the thread ID so we can resume
+  // the Codex thread if Claude fails again this turn.
+  let useCodex = containerInput.providerConfig?.primary === 'codex';
+  let codexThreadId: string | undefined;
+  if (sessionId?.startsWith('codex:')) {
+    codexThreadId = sessionId.slice('codex:'.length);
+    sessionId = undefined; // Can't resume a Codex thread with Claude; start fresh
+    if (!useCodex) {
+      log('Prior turn used Codex fallback; retrying Claude first (codexThreadId saved for re-fallback)');
+    }
+  }
+
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
   try {
     while (true) {
       log(
-        `Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`,
+        `Starting query (provider: ${useCodex ? 'codex' : 'claude'}, session: ${useCodex ? (codexThreadId || 'new') : (sessionId || 'new')}, resumeAt: ${resumeAt || 'latest'})...`,
       );
 
-      const queryResult = await runQuery(
-        prompt,
-        sessionId,
-        mcpServerPath,
-        containerInput,
-        sdkEnv,
-        resumeAt,
-      );
+      if (useCodex) {
+        const codexResult = await runCodexQuery(
+          prompt,
+          codexThreadId,
+          mcpServerPath,
+          containerInput,
+        );
+        codexThreadId = codexResult.newThreadId;
+        sessionId = 'codex:' + codexThreadId;
+
+        log('Codex query ended, waiting for next IPC message...');
+        const nextMessage = await waitForIpcMessage();
+        if (nextMessage === null) {
+          log('Close sentinel received, exiting');
+          break;
+        }
+        log(`Got new message (${nextMessage.length} chars), starting new query`);
+        prompt = nextMessage;
+        continue;
+      }
+
+      let queryResult: Awaited<ReturnType<typeof runQuery>>;
+      try {
+        queryResult = await runQuery(
+          prompt,
+          sessionId,
+          mcpServerPath,
+          containerInput,
+          sdkEnv,
+          resumeAt,
+        );
+      } catch (claudeErr) {
+        const fallback = containerInput.providerConfig?.fallback;
+        if (shouldFallbackToCodex(claudeErr) && fallback !== 'none') {
+          log(
+            `Claude error, falling back to Codex: ${claudeErr instanceof Error ? claudeErr.message : String(claudeErr)}`,
+          );
+          useCodex = true;
+          sessionId = undefined;
+          codexThreadId = undefined;
+
+          // Replay any IPC messages consumed mid-turn before the error
+          const consumed = claudeErr instanceof SoftLimitError ? claudeErr.consumedIpcMessages : [];
+          const fallbackPrompt = consumed.length > 0
+            ? [prompt, ...consumed].join('\n\n')
+            : prompt;
+          if (consumed.length > 0) {
+            log(`Replaying ${consumed.length} consumed IPC message(s) into Codex fallback prompt`);
+          }
+
+          const codexResult = await runCodexQuery(
+            fallbackPrompt,
+            undefined,
+            mcpServerPath,
+            containerInput,
+          );
+          codexThreadId = codexResult.newThreadId;
+          sessionId = 'codex:' + codexThreadId;
+
+          log('Codex fallback query ended, waiting for next IPC message...');
+          const nextMessage = await waitForIpcMessage();
+          if (nextMessage === null) {
+            log('Close sentinel received, exiting');
+            break;
+          }
+          log(`Got new message (${nextMessage.length} chars), starting new query`);
+          prompt = nextMessage;
+          continue;
+        }
+        throw claudeErr;
+      }
+
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }

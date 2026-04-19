@@ -9,6 +9,7 @@ export interface ChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
+  onGroupConfigUpdate: (jid: string, config: import('../types.js').ContainerConfig | undefined) => void;
 }
 
 export type ChannelFactory = (opts: ChannelOpts) => Channel | null;

@@ -18,7 +18,7 @@ const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 // Context from environment variables (set by the agent runner)
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
-const isMain = process.env.NANOCLAW_IS_MAIN === '1';
+const isMain = process.env.NANOCLAW_IS_MAIN === '1' || process.env.NANOCLAW_IS_MAIN === 'true';
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -497,6 +497,44 @@ Use available_groups.json to find the JID for a group. The folder name must be c
         {
           type: 'text' as const,
           text: `Group "${args.name}" registered. It will start receiving messages immediately.`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'set_model',
+  `Switch the AI model or provider for this chat channel. Takes effect on the next message turn.
+
+Available models:
+Claude: claude-sonnet-4-6 | claude-opus-4-7 | claude-haiku-4-5-20251001
+Codex:  gpt-5.4 (default) | gpt-5.2-codex | gpt-5.1-codex-max | gpt-5.4-mini | gpt-5.3-codex | gpt-5.2 | gpt-5.1-codex-mini`,
+  {
+    provider: z
+      .enum(['claude', 'codex'])
+      .describe('Primary provider to use'),
+    model: z
+      .string()
+      .optional()
+      .describe('Model name (e.g. "gpt-4o-mini", "claude-sonnet-4-6"). Omit for provider default.'),
+  },
+  async (args) => {
+    const data = {
+      type: 'set_model',
+      jid: chatJid,
+      provider: args.provider,
+      model: args.model ?? '',
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Model updated to ${args.provider}${args.model ? ` / ${args.model}` : ''}. Takes effect on the next message.`,
         },
       ],
     };
