@@ -507,13 +507,9 @@ server.tool(
   'set_model',
   `Switch the AI model or provider for this chat channel. Takes effect on the next message turn.
 
-Available presets:
-- Claude Sonnet 4.6: provider="claude", model="claude-sonnet-4-6"
-- Claude Opus 4.7: provider="claude", model="claude-opus-4-7"
-- Claude Haiku 4.5: provider="claude", model="claude-haiku-4-5-20251001"
-- Codex GPT-4o: provider="codex", model="gpt-4o"
-- Codex GPT-4o mini: provider="codex", model="gpt-4o-mini"
-- Codex o4-mini: provider="codex", model="o4-mini"`,
+Available models:
+Claude: claude-sonnet-4-6 | claude-opus-4-7 | claude-haiku-4-5-20251001
+Codex:  gpt-5.4 (default) | gpt-5.2-codex | gpt-5.1-codex-max | gpt-5.4-mini | gpt-5.3-codex | gpt-5.2 | gpt-5.1-codex-mini`,
   {
     provider: z
       .enum(['claude', 'codex'])
